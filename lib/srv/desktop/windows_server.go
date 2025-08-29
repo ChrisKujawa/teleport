@@ -184,6 +184,8 @@ type WindowsServiceConfig struct {
 	Discovery []servicecfg.LDAPDiscoveryConfig
 	// DiscoveryInterval configures how frequently the discovery process runs.
 	DiscoveryInterval time.Duration
+	// PublishCRLInterval configures how frequently CRLs are published.
+	PublishCRLInterval time.Duration
 	// Hostname of the Windows desktop service
 	Hostname string
 	// ConnectedProxyGetter gets the proxies teleport is connected to.
@@ -228,6 +230,7 @@ func (cfg *WindowsServiceConfig) checkAndSetDiscoveryDefaults() error {
 	}
 
 	cfg.DiscoveryInterval = cmp.Or(cfg.DiscoveryInterval, 5*time.Minute)
+	cfg.PublishCRLInterval = cmp.Or(cfg.PublishCRLInterval, 5*time.Minute)
 
 	return nil
 }
@@ -379,9 +382,7 @@ func NewWindowsService(cfg WindowsServiceConfig) (*WindowsService, error) {
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-		if err := s.ca.Update(s.closeCtx, tc); err != nil {
-			return nil, trace.Wrap(err)
-		}
+		s.startPublishingCRL(tc)
 	}
 
 	ok := false
@@ -1304,4 +1305,30 @@ func (m *monitorErrorSender) WriteString(s string) (n int, err error) {
 	}
 
 	return len(s), nil
+}
+
+// startPublishingCRL publishes the Certificate Revocation List to the given
+// ldap server. It continues to do so every 10 minutes to make sure it is present
+// and in the correct location.
+func (s *WindowsService) startPublishingCRL(tlsConfig *tls.Config) {
+	// Make an initial call to publish CRL before entering periodic calls
+	if err := s.ca.Update(s.closeCtx, tlsConfig); err != nil && !errors.Is(err, context.Canceled) {
+		s.cfg.Logger.ErrorContext(s.closeCtx, "failed to publish CRL", "error", err)
+	}
+
+	go func() {
+		t := s.cfg.Clock.NewTicker(time.Minute * 10)
+		defer t.Stop()
+
+		for {
+			select {
+			case <-s.closeCtx.Done():
+				return
+			case <-t.Chan():
+				if err := s.ca.Update(s.closeCtx, tlsConfig); err != nil && !errors.Is(err, context.Canceled) {
+					s.cfg.Logger.ErrorContext(s.closeCtx, "failed to publish CRL", "error", err)
+				}
+			}
+		}
+	}()
 }
