@@ -38,7 +38,6 @@ import (
 	"github.com/gravitational/teleport/api/types/wrappers"
 	"github.com/gravitational/teleport/lib"
 	"github.com/gravitational/teleport/lib/defaults"
-	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/srv/app/common"
 	"github.com/gravitational/teleport/lib/utils"
 )
@@ -199,42 +198,9 @@ func (t *transport) rewriteRequest(r *http.Request) error {
 	r.URL.Host = t.uri.Host
 
 	// Add headers from rewrite configuration.
-	rewriteHeaders(r, t.transportConfig)
+	common.RewriteAppHeaders(r, t.app, t.jwt, t.traits, t.log)
 
 	return nil
-}
-
-// rewriteHeaders applies headers rewrites from the application configuration.
-func rewriteHeaders(r *http.Request, c *transportConfig) {
-	// Add in JWT headers.
-	r.Header.Set(teleport.AppJWTHeader, c.jwt)
-
-	if c.app.GetRewrite() == nil || len(c.app.GetRewrite().Headers) == 0 {
-		return
-	}
-	for _, header := range c.app.GetRewrite().Headers {
-		if common.IsReservedHeader(header.Name) {
-			c.log.DebugContext(r.Context(), "Not rewriting Teleport reserved header", "header_name", header.Name)
-			continue
-		}
-		values, err := services.ApplyValueTraits(header.Value, c.traits)
-		if err != nil {
-			c.log.DebugContext(r.Context(), "Failed to apply traits",
-				"header_value", header.Value,
-				"error", err,
-			)
-			continue
-		}
-		r.Header.Del(header.Name)
-		for _, value := range values {
-			switch http.CanonicalHeaderKey(header.Name) {
-			case teleport.HostHeader:
-				r.Host = value
-			default:
-				r.Header.Add(header.Name, value)
-			}
-		}
-	}
 }
 
 // needsPathRedirect checks if the request should be redirected to a different path.

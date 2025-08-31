@@ -19,9 +19,15 @@
 package common
 
 import (
+	"log/slog"
+	"net/http"
 	"net/http/httputil"
 
+	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/api/types/wrappers"
 	"github.com/gravitational/teleport/lib/httplib/reverseproxy"
+	"github.com/gravitational/teleport/lib/services"
 )
 
 const (
@@ -53,5 +59,45 @@ func (hr *HeaderRewriter) Rewrite(req *httputil.ProxyRequest) {
 		req.Out.Header.Set(XForwardedSSL, sslOn)
 	} else {
 		req.Out.Header.Set(XForwardedSSL, sslOff)
+	}
+}
+
+// RewriteAppHeaders applies headers rewrites from the application
+// configuration.
+func RewriteAppHeaders(
+	r *http.Request,
+	app types.Application,
+	jwt string,
+	traits wrappers.Traits,
+	log *slog.Logger,
+) {
+	// Add in JWT headers.
+	r.Header.Set(teleport.AppJWTHeader, jwt)
+
+	if app.GetRewrite() == nil || len(app.GetRewrite().Headers) == 0 {
+		return
+	}
+	for _, header := range app.GetRewrite().Headers {
+		if IsReservedHeader(header.Name) {
+			log.DebugContext(r.Context(), "Not rewriting Teleport reserved header", "header_name", header.Name)
+			continue
+		}
+		values, err := services.ApplyValueTraits(header.Value, traits)
+		if err != nil {
+			log.DebugContext(r.Context(), "Failed to apply traits",
+				"header_value", header.Value,
+				"error", err,
+			)
+			continue
+		}
+		r.Header.Del(header.Name)
+		for _, value := range values {
+			switch http.CanonicalHeaderKey(header.Name) {
+			case teleport.HostHeader:
+				r.Host = value
+			default:
+				r.Header.Add(header.Name, value)
+			}
+		}
 	}
 }
